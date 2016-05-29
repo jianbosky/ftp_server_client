@@ -23,5 +23,5 @@
                           client.py 为客户端主程序用于建立与服务器端的认证连接
                           file_handler.py 为客户端文件上传与下载功能实例模块
 开源地址为：https://github.com/jianbosky/ftp_server_client
-博客地址为：
+博客地址为： http://www.cnblogs.com/IPYQ/p/5540076.html
                           
