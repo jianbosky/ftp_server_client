@@ -42,6 +42,7 @@ class FTPs(object):
         :return:
         '''
         if self.cmd_file:
+            # 获取已用磁盘空间大小
             self.user_space = int(self.getdirsize(self.root)/1024)
             # 组合接收字符串
             self.file_root = '%s\\%s'% (self.home,self.cmd_file)
@@ -58,20 +59,47 @@ class FTPs(object):
                 if self.size[0]== "fsize":
                     self.fss = int(self.size[1])
                     self.f_total_size = int(self.user_space + (self.fss/1024/1024))
-                    if self.f_total_size < self.total_size:  # 判断空间是否超额
-                        self.conn.send(bytes("f_ack_ready","utf8"))
-                        self.bsize = 0
-                        print("需要上传文件大小：",self.fss)
-                        # 打开文件
-                        f=open(self.f,'wb')
-                        while self.bsize < self.fss:
-                            data = self.conn.recv(self.psize)
-                            self.bsize += len(data)
-                            f.write(data)
-                        self.conn.send(bytes("ok","utf8"))
-                        print("实际已上传文件大小：",self.bsize)
+                    self.bsize = 0
+                    # 判断文件是否在当前目录存在
+                    if os.path.isfile(self.f):
+                    # 获取当前目录已存在的文件大小
+                        self.lsize = os.path.getsize(self.f)
+                        # 判断文件大小是否一致
+                        if self.lsize == self.fss:
+                            self.conn.send(bytes("f_ok","utf8"))  # 发送文件已存在的指令
+                        else:
+                            # 开始进行断点续传
+                            self.conn.send(bytes("f_continue","utf8"))  # 发送文件断点续传指令
+                            #  获取上次已上传的文件大小
+                            self.busize = os.path.getsize(self.f)
+                            print("服务器正在断点续传文件中，上次已上传：%s字节"%self.busize)
+                            self.ack_continue = self.conn.recv(1024)
+                            if self.ack_continue.decode() == "continue_ok":
+                                self.conn.send(bytes("%s"%self.busize,"utf8"))
+                                f = open(self.f,"ab")
+                                while self.busize < self.fss:
+                                    data = self.conn.recv(self.psize)
+                                    self.busize += len(data)
+                                    f.write(data)
+                                    f.flush()
+                                self.conn.send(bytes("ok","utf8"))
+                                print("实际已上传文件大小：",self.busize)
                     else:
-                        self.conn.send(bytes("上传空间不足！无法上传,你当前磁盘配额为%sM"%self.total_size,"utf8"))
+                        # 进行文件上传操作
+                        if self.f_total_size < self.total_size:  # 判断空间是否超额
+                            self.conn.send(bytes("f_ack_ready","utf8"))
+                            print("需要上传文件大小：",self.fss)
+                            # 打开文件
+                            f=open(self.f,'wb')
+                            while self.bsize < self.fss:
+                                data = self.conn.recv(self.psize)
+                                self.bsize += len(data)
+                                f.write(data)
+                                f.flush()
+                            self.conn.send(bytes("ok","utf8"))
+                            print("实际已上传文件大小：",self.bsize)
+                        else:
+                            self.conn.send(bytes("上传空间不足！无法上传,你当前磁盘配额为%sM"%self.total_size,"utf8"))
 
             except Exception as ex:
                 self.conn.send(bytes(ex,"utf8"))
@@ -84,31 +112,55 @@ class FTPs(object):
         '''
         if self.cmd_file:
             os.chdir(self.home) # 进入用户根目录
-            self.file = os.getcwd()+"\\"+ self.cmd_file
+            self.file = os.getcwd() +"\\"+ self.cmd_file
             if os.path.isfile(self.file):
                 f = open(self.file, 'rb')
                 self.fsize = os.path.getsize(self.file) # 获取要发送文件的大小
                 self.conn.send(bytes("f_ack_read","utf8"))
-                self.conn.recv(1000)
-                print("需发送文件大小：",self.fsize)
-                self.conn.send(bytes("fsize|%s"%self.fsize,"utf8")) # 发送文件大小及要发送准备完毕指令
-                if self.conn.recv(1000).decode() == "f_ack":  # 接收对方是否准备就绪
-                    self.fsize = int(self.fsize)
-                    self.size = 0
-                    ack =""
-                    while self.size < self.fsize and ack !="ok":
-                        data = f.read(self.fsize)  # 一次读取分片大小4096
-                        self.conn.send(data)
-                        self.size += len(data)
-                    print("实际发送文件大小：",self.size)
-                    ack = self.conn.recv(1000).decode() # 接收客户端是否下载完指令
-                    self.conn.send(bytes("成功","utf8"))
-                else:
-                    self.conn.send(bytes("接收失败","utf8"))
+                # 接收需传送文件的类型指令，完全下载或断点续传
+                self.f_ack = self.conn.recv(1000).decode()
+                if self.f_ack == "f_read_ok":
+                    self.conn.send(bytes("fsize|%s"%self.fsize,"utf8")) # 发送文件大小及要发送准备完毕指令
+                    self.f_read = self.conn.recv(1000).decode()
+                    if self.f_read == "f_ack":  # 接收对方是否准备就绪
+                        print("需发送文件大小：",self.fsize)
+                        self.fsize = int(self.fsize)
+                        self.size = 0
+                        ack =""
+                        while self.size < self.fsize and ack !="ok":
+                            data = f.read(self.psize)  # 一次读取分片大小4096
+                            self.conn.send(data)
+                            self.size += len(data)
+                        print("实际发送文件大小：",self.size)
+                        ack = self.conn.recv(1000).decode() # 接收客户端是否下载完指令
+                        self.conn.send(bytes("成功","utf8"))
+                    elif self.f_read == "f_ack_continue":
+                        # 断点续传
+                        self.conn.send(bytes("file_continue","utf8"))
+                        self.cf_size = int(self.conn.recv(1024).decode())
+                        # 计算此次还需发送的字节数量
+                        self.Bs = self.fsize-self.cf_size
+                        print("需发送文件大小：%s字节"%self.Bs)
+                        # 定位到文件上次中断的位置
+                        f.seek(self.cf_size)
+                        print("服务器正在断点续传文件中，上次已下载：%s字节"%self.cf_size,"此次还需下载：%s字节"%self.Bs)
+                        while self.cf_size < self.fsize:
+                            data = f.read(4096)
+                            self.conn.send(data)
+                            self.cf_size += len(data)
+                        print("此次断点续传，实际发送文件大小：%s"%self.Bs)
+                        ack = self.conn.recv(1000).decode() # 接收客户端是否下载完指令
+                        if ack == "ok":
+                            self.conn.send(bytes("成功","utf8"))
+                        else:
+                            self.conn.send(bytes("失败","utf8"))
+
+                    else:
+                        print(self.f_read)
             else:
                 self.conn.send(bytes("文件不存在","utf8"))
         else:
-            self.conn.send(bytes("请输入文件名","utf8"))
+            self.conn.send(bytes("请输入要下载文件名","utf8"))
     def dir(self):
         '''
         查看文件
